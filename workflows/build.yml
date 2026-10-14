@@ -1,0 +1,151 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Generate project
+        run: |
+          mkdir -p app/src/main/assets app/src/main/java/com/gw/printer
+          cp index.html app/src/main/assets/index.html
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "PrinterApp"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+          android {
+              namespace 'com.gw.printer'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.gw.printer"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = '17' }
+          }
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+              <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+              <application
+                  android:label="Printer"
+                  android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/gw/printer/MainActivity.kt <<'EOF'
+          package com.gw.printer
+
+          import android.annotation.SuppressLint
+          import android.bluetooth.BluetoothAdapter
+          import android.os.Build
+          import android.os.Bundle
+          import android.webkit.JavascriptInterface
+          import android.webkit.WebView
+          import androidx.appcompat.app.AppCompatActivity
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.UUID
+
+          @SuppressLint("SetJavaScriptEnabled", "MissingPermission")
+          class MainActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  if (Build.VERSION.SDK_INT >= 31) {
+                      requestPermissions(arrayOf("android.permission.BLUETOOTH_CONNECT"), 1)
+                  }
+                  val web = WebView(this)
+                  setContentView(web)
+                  web.settings.javaScriptEnabled = true
+                  web.addJavascriptInterface(Bridge(), "Android")
+                  web.loadUrl("file:///android_asset/index.html")
+              }
+
+              inner class Bridge {
+                  private val spp = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+
+                  @JavascriptInterface
+                  fun listPrinters(): String {
+                      val arr = JSONArray()
+                      BluetoothAdapter.getDefaultAdapter()?.bondedDevices?.forEach {
+                          arr.put(JSONObject().put("name", it.name).put("mac", it.address))
+                      }
+                      return arr.toString()
+                  }
+
+                  @JavascriptInterface
+                  fun print(mac: String, text: String) {
+                      Thread {
+                          try {
+                              val adapter = BluetoothAdapter.getDefaultAdapter()
+                              adapter.cancelDiscovery()
+                              val socket = adapter.getRemoteDevice(mac)
+                                  .createRfcommSocketToServiceRecord(spp)
+                              socket.connect()
+                              socket.outputStream.apply {
+                                  write(byteArrayOf(0x1B, 0x40))
+                                  write(text.toByteArray(Charsets.UTF_8))
+                                  write("\n\n\n".toByteArray())
+                                  flush()
+                              }
+                              Thread.sleep(500)
+                              socket.close()
+                          } catch (e: Exception) {
+                              e.printStackTrace()
+                          }
+                      }.start()
+                  }
+              }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: printer-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
