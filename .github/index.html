@@ -3,42 +3,38 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Auto Crop Resi Blueprint</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <title>Auto Crop Resi</title>
+  <script src="pdf.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: sans-serif; }
     body { background: #0f172a; color: #ffffff; padding: 12px; display: flex; flex-direction: column; align-items: center; }
     .card { background: #1e293b; max-width: 420px; width: 100%; border-radius: 12px; padding: 16px; border: 1px solid #334155; }
     h2 { font-size: 1.1rem; text-align: center; margin-bottom: 12px; color: #38bdf8; }
-    
-    .btn-upload {
-      background: #0284c7; color: white; padding: 14px; text-align: center;
-      border-radius: 8px; font-weight: bold; cursor: pointer; display: block; margin-bottom: 12px;
-      font-size: 1rem;
-    }
-    .preview-wrap {
-      background: #000; border: 1px solid #475569; border-radius: 8px;
-      padding: 8px; display: flex; justify-content: center; align-items: center;
-      min-height: 220px; margin-bottom: 12px;
-    }
+    .btn-upload { background: #0284c7; color: white; padding: 14px; text-align: center; border-radius: 8px; font-weight: bold; cursor: pointer; display: block; margin-bottom: 12px; font-size: 1rem; }
+    .row { display: flex; gap: 8px; margin-bottom: 12px; }
+    select { background: #0f172a; color: #fff; border: 1px solid #475569; border-radius: 8px; padding: 12px; font-size: 0.95rem; }
+    #selPrinter { flex: 1; min-width: 0; }
+    .preview-wrap { background: #000; border: 1px solid #475569; border-radius: 8px; padding: 8px; display: flex; justify-content: center; align-items: center; min-height: 220px; margin-bottom: 12px; }
     canvas { max-width: 100%; height: auto; max-height: 350px; background: white; }
-    
-    button {
-      border: none; padding: 14px; border-radius: 8px; font-weight: bold;
-      font-size: 1rem; cursor: pointer; width: 100%;
-    }
+    button { border: none; padding: 14px; border-radius: 8px; font-weight: bold; font-size: 1rem; cursor: pointer; width: 100%; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
-    
     .btn-direct { background: #10b981; color: white; }
     .btn-direct:active { background: #059669; }
-
-    .status { font-size: 0.75rem; color: #94a3b8; text-align: center; margin-top: 10px; }
+    .status { font-size: 0.8rem; color: #94a3b8; text-align: center; margin-top: 10px; }
   </style>
 </head>
 <body>
 
 <div class="card">
   <h2>Auto-Crop Resi Langsung Cetak</h2>
+
+  <div class="row">
+    <select id="selPrinter"></select>
+    <select id="selWidth">
+      <option value="384">58mm</option>
+      <option value="576">80mm</option>
+    </select>
+  </div>
 
   <label class="btn-upload" for="fileInput">
     📁 1. PILIH RESI (PDF / FOTO)
@@ -49,8 +45,7 @@
     <canvas id="cvsMain" width="600" height="900"></canvas>
   </div>
 
-  <!-- Tombol Langsung Kirim ke Aplikasi Cetak -->
-  <button class="btn-direct" id="btnShare" onclick="sendDirectToApp()" disabled>
+  <button class="btn-direct" id="btnPrint" onclick="printNow()" disabled>
     🚀 2. LANGSUNG KIRIM KE PRINTER
   </button>
 
@@ -59,60 +54,95 @@
 
 <script>
   if (window.pdfjsLib) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
   }
 
   const cvs = document.getElementById('cvsMain');
   const ctx = cvs.getContext('2d');
   const txtStatus = document.getElementById('txtStatus');
-  const btnShare = document.getElementById('btnShare');
+  const btnPrint = document.getElementById('btnPrint');
+  const selPrinter = document.getElementById('selPrinter');
+  const selWidth = document.getElementById('selWidth');
 
   let srcCanvas = document.createElement('canvas');
   let srcCtx = srcCanvas.getContext('2d');
   let isReady = false;
 
+  // ---------- Daftar printer ----------
+  function loadPrinters() {
+    selPrinter.innerHTML = '';
+    if (typeof Android === 'undefined') {
+      selPrinter.add(new Option('(buka lewat APK)', ''));
+      return;
+    }
+    let list = [];
+    try { list = JSON.parse(Android.listPrinters()); } catch (e) {}
+    if (!list.length) {
+      selPrinter.add(new Option('Belum ada printer ter-pair', ''));
+      return;
+    }
+    list.forEach(d => selPrinter.add(new Option(d.name + ' (' + d.mac.slice(-5) + ')', d.mac)));
+    try {
+      const last = localStorage.getItem('printerMac');
+      if (last) selPrinter.value = last;
+      const w = localStorage.getItem('printerWidth');
+      if (w) selWidth.value = w;
+    } catch (e) {}
+  }
+  selPrinter.addEventListener('change', () => { try { localStorage.setItem('printerMac', selPrinter.value); } catch (e) {} });
+  selWidth.addEventListener('change', () => { try { localStorage.setItem('printerWidth', selWidth.value); } catch (e) {} });
+  loadPrinters();
+
+  // ---------- Pilih file ----------
   document.getElementById('fileInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     txtStatus.innerText = 'Memotong area kosong otomatis...';
 
-    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
-      const buffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-      const page = await pdf.getPage(1);
-      
-      const vp = page.getViewport({ scale: 1.5 });
-      srcCanvas.width = vp.width;
-      srcCanvas.height = vp.height;
-
-      await page.render({ canvasContext: srcCtx, viewport: vp }).promise;
-    } else {
-      await new Promise(res => {
-        const reader = new FileReader();
-        reader.onload = ev => {
-          const img = new Image();
-          img.onload = () => {
-            srcCanvas.width = img.width;
-            srcCanvas.height = img.height;
-            srcCtx.drawImage(img, 0, 0);
-            res();
+    try {
+      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        if (!window.pdfjsLib) {
+          txtStatus.innerText = 'pdf.js belum termuat. Coba pakai foto dulu.';
+          return;
+        }
+        const buffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+        const page = await pdf.getPage(1);
+        const vp = page.getViewport({ scale: 1.5 });
+        srcCanvas.width = vp.width;
+        srcCanvas.height = vp.height;
+        srcCtx.fillStyle = '#fff';
+        srcCtx.fillRect(0, 0, srcCanvas.width, srcCanvas.height);
+        await page.render({ canvasContext: srcCtx, viewport: vp }).promise;
+      } else {
+        await new Promise((res, rej) => {
+          const reader = new FileReader();
+          reader.onload = ev => {
+            const img = new Image();
+            img.onload = () => {
+              srcCanvas.width = img.width;
+              srcCanvas.height = img.height;
+              srcCtx.drawImage(img, 0, 0);
+              res();
+            };
+            img.onerror = rej;
+            img.src = ev.target.result;
           };
-          img.src = ev.target.result;
-        };
-        reader.readAsDataURL(file);
-      });
+          reader.onerror = rej;
+          reader.readAsDataURL(file);
+        });
+      }
+      isReady = true;
+      renderOptimized();
+    } catch (err) {
+      txtStatus.innerText = 'Gagal membaca file: ' + err;
     }
-
-    isReady = true;
-    renderOptimized();
   });
 
   function detectBounds(sCtx, w, h) {
-    const imgData = sCtx.getImageData(0, 0, w, h);
-    const d = imgData.data;
+    const d = sCtx.getImageData(0, 0, w, h).data;
     let minX = w, minY = h, maxX = 0, maxY = 0, found = false;
-
     for (let y = 0; y < h; y += 4) {
       for (let x = 0; x < w; x += 4) {
         const i = (y * w + x) * 4;
@@ -161,7 +191,6 @@
     ctx.drawImage(srcCanvas, box.x, box.y, box.w, box.h, -dw / 2, -dh / 2, dw, dh);
     ctx.restore();
 
-    // Binarisasi kontras hitam-putih
     const idata = ctx.getImageData(0, 0, cvs.width, cvs.height);
     const d = idata.data;
     for (let i = 0; i < d.length; i += 4) {
@@ -170,36 +199,71 @@
     }
     ctx.putImageData(idata, 0, 0);
 
-    // Border tipis untuk deteksi tepi printer
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
     ctx.strokeRect(1, 1, cvs.width - 2, cvs.height - 2);
 
-    btnShare.disabled = false;
-    txtStatus.innerText = 'Selesai dipotong! Klik tombol hijau di bawah.';
+    btnPrint.disabled = false;
+    txtStatus.innerText = 'Selesai dipotong! Klik tombol hijau untuk cetak.';
   }
 
-  // Mengirim file langsung via Share Sheet Android
-  function sendDirectToApp() {
-    cvs.toBlob(async (blob) => {
-      const file = new File([blob], 'resi_siap_cetak.jpg', { type: 'image/jpeg' });
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({
-            files: [file],
-            title: 'Cetak Resi',
-            text: 'Cetak ke printer thermal'
-          });
-        } catch (e) {}
-      } else {
-        // Fallback jika WebView memblokir share sheet
-        const link = document.createElement('a');
-        link.download = 'resi_siap_cetak.jpg';
-        link.href = cvs.toDataURL('image/jpeg', 0.70);
-        link.click();
-        txtStatus.innerText = 'Tersimpan otomatis. Buka aplikasi Blueprint.';
+  // ---------- Cetak ----------
+  // Ubah canvas jadi bitmap ESC/POS (GS v 0), dikirim per pita 96 baris
+  function canvasToEscPos(width) {
+    const h = Math.round(cvs.height * width / cvs.width);
+    const c = document.createElement('canvas');
+    c.width = width; c.height = h;
+    const x = c.getContext('2d');
+    x.fillStyle = '#fff';
+    x.fillRect(0, 0, width, h);
+    x.drawImage(cvs, 0, 0, width, h);
+    const px = x.getImageData(0, 0, width, h).data;
+    const wb = width / 8;
+    const BAND = 96;
+    const out = [];
+    for (let y0 = 0; y0 < h; y0 += BAND) {
+      const bh = Math.min(BAND, h - y0);
+      out.push(0x1D, 0x76, 0x30, 0, wb & 255, wb >> 8, bh & 255, bh >> 8);
+      for (let y = y0; y < y0 + bh; y++) {
+        for (let b = 0; b < wb; b++) {
+          let v = 0;
+          for (let k = 0; k < 8; k++) {
+            const i = (y * width + b * 8 + k) * 4;
+            if ((px[i] + px[i+1] + px[i+2]) / 3 < 128) v |= 0x80 >> k;
+          }
+          out.push(v);
+        }
       }
-    }, 'image/jpeg', 0.70);
+    }
+    return out;
+  }
+
+  function toBase64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      s += String.fromCharCode.apply(null, bytes.slice(i, i + 0x8000));
+    }
+    return btoa(s);
+  }
+
+  function printNow() {
+    if (typeof Android === 'undefined') {
+      txtStatus.innerText = 'Ini cuma jalan di dalam APK.';
+      return;
+    }
+    if (!selPrinter.value) {
+      loadPrinters();
+      txtStatus.innerText = 'Pilih printer dulu (pair di setting Bluetooth).';
+      return;
+    }
+    try {
+      txtStatus.innerText = 'Mengirim ke printer...';
+      const bytes = canvasToEscPos(parseInt(selWidth.value, 10));
+      Android.printRaw(selPrinter.value, toBase64(bytes));
+      txtStatus.innerText = 'Terkirim. Tunggu kertas keluar.';
+    } catch (e) {
+      txtStatus.innerText = 'Gagal kirim: ' + e;
+    }
   }
 </script>
 </body>
