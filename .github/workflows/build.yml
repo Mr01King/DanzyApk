@@ -35,6 +35,11 @@ jobs:
           }
           EOF
 
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          EOF
+
           cat > app/build.gradle <<'EOF'
           plugins {
               id 'com.android.application'
@@ -56,9 +61,6 @@ jobs:
               }
               kotlinOptions { jvmTarget = '17' }
           }
-          dependencies {
-              implementation 'androidx.appcompat:appcompat:1.6.1'
-          }
           EOF
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
@@ -68,7 +70,7 @@ jobs:
               <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
               <application
                   android:label="Printer"
-                  android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
@@ -83,18 +85,18 @@ jobs:
           package com.gw.printer
 
           import android.annotation.SuppressLint
+          import android.app.Activity
           import android.bluetooth.BluetoothAdapter
           import android.os.Build
           import android.os.Bundle
           import android.webkit.JavascriptInterface
           import android.webkit.WebView
-          import androidx.appcompat.app.AppCompatActivity
           import org.json.JSONArray
           import org.json.JSONObject
           import java.util.UUID
 
           @SuppressLint("SetJavaScriptEnabled", "MissingPermission")
-          class MainActivity : AppCompatActivity() {
+          class MainActivity : Activity() {
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   if (Build.VERSION.SDK_INT >= 31) {
@@ -103,6 +105,7 @@ jobs:
                   val web = WebView(this)
                   setContentView(web)
                   web.settings.javaScriptEnabled = true
+                  web.settings.domStorageEnabled = true
                   web.addJavascriptInterface(Bridge(), "Android")
                   web.loadUrl("file:///android_asset/index.html")
               }
@@ -145,7 +148,7 @@ jobs:
           }
           EOF
       - name: Build
-        run: gradle assembleDebug
+        run: gradle assembleDebug --console=plain 2>&1 | grep -v "^\s*$" | tail -n 60; exit ${PIPESTATUS[0]}
       - uses: actions/upload-artifact@v4
         with:
           name: printer-apk
